@@ -1,13 +1,15 @@
-from .multiagentenv import MultiAgentEnv
+from multiagentenv import MultiAgentEnv
 from functools import reduce
+from itertools import product
 import numpy as np
+import cv2
 
 class GridWorld2D(MultiAgentEnv):
 
 	def __init__(self, **kwargs):
 
-		self.map_size = [15, 15] # minimum size
-		self.obs_range = [5, 5]
+		self.map_size = (6, 6) # minimum size
+		self.obs_range = (5, 5)
 		self.state = np.zeros(self.map_size)
 		self.terrains = {
 			0 : 'ground',
@@ -40,7 +42,9 @@ class GridWorld2D(MultiAgentEnv):
 		}
 		self.n_agents = 2
 		self.episode_limit = 100
-		self.randomized = True
+		self.randomized = False
+		self.obs_states_flatten = True
+		self.render_image = True
 		self.reset()
 
 	def reset(self):
@@ -49,15 +53,15 @@ class GridWorld2D(MultiAgentEnv):
 		self.bridge_visible = False
 		self.t_step = 0
 		if self.randomized:
-			self.water_column = np.random.random_integers(2, max_c-1)
+			self.water_column = np.random.random_integers(1, max_c-1)
 			self.bridge_row = np.random.random_integers(0, max_c)
 			self.goal_pos = [np.random.random_integers(0, max_r), np.random.random_integers(0, self.water_column-1)]
 			self.agent_pos = [[np.random.random_integers(0, max_r), np.random.random_integers(self.water_column+1, max_c)] for i in range(self.n_agents)]
 			self.switch_pos = [np.random.random_integers(0, max_r), np.random.random_integers(self.water_column+1, max_c)]
 			self.agent_ori = [np.random.random_integers(0 ,4) for _ in range(self.n_agents)]
 		else:
-			self.water_column = 5
-			self.bridge_row = 10
+			self.water_column = self.map_size[1]//2
+			self.bridge_row = self.map_size[0]//2
 			self.goal_pos = [max_r-1, 0]
 			self.switch_pos = [0, max_c-1]
 			self.agent_pos = [[np.random.random_integers(0, max_r), np.random.random_integers(self.water_column+1, max_c)] for i in range(self.n_agents)]
@@ -79,10 +83,17 @@ class GridWorld2D(MultiAgentEnv):
 		return state
 
 	def get_state(self):
-		return self._cal_state()
+		self._cal_state()
+		if self.obs_states_flatten:
+			return self.state.flatten()
+		else:
+			return self.state
 
 	def get_state_size(self):
-		return self.map_size
+		if self.obs_states_flatten:
+			return reduce(lambda x,y: x*y, self.map_size)
+		else:
+			return self.map_size
 
 	def get_obs(self):
 		agents_obs = [self.get_obs_agent(i) for i in range(self.n_agents)]
@@ -126,10 +137,16 @@ class GridWorld2D(MultiAgentEnv):
 			offset_x = x-delta_h
 			offset_y = y-delta_v
 		obs[(row_l-offset_x):(row_h-offset_x), (col_l-offset_y):(col_h-offset_y)] = self.state[row_l:row_h, col_l:col_h]
-		return obs
+		if self.obs_states_flatten:
+			return obs.flatten()
+		else:
+			return obs
 
 	def get_obs_size(self):
-		return self.obs_range
+		if self.obs_states_flatten:
+			return reduce(lambda x,y: x*y, self.obs_range)
+		else:
+			return self.obs_range
 
 	def _visualize(self, state):
 		rep = str()
@@ -138,8 +155,14 @@ class GridWorld2D(MultiAgentEnv):
 			rep += (reduce(lambda x, y:str(x)+str(y) ,state[i,:])+'\n')	
 		return rep
 
-	def render(self):
-		print(self._visualize(self.state))
+	def render(self, t=1000):
+		if self.render_image:
+			# cv2.destroyAllWindows()
+			img = self._state2image()
+			cv2.imshow("Grid World 2D", img)
+			cv2.waitKey(t)
+		else:
+			print(self._visualize(self.state))
 
 	def _cal_pos(self, pos, ori, a):
 		delta = {0 : [-1, 0],
@@ -159,6 +182,7 @@ class GridWorld2D(MultiAgentEnv):
 	def step(self, actions):
 		# assume actions are numbers, not one-hot reprs
 		info = {}
+		actions = [int(a) for a in actions]
 		self.last_actions = actions
 		if self.agent_pos[1] == self.switch_pos:
 			self.bridge_visible = True
@@ -198,6 +222,48 @@ class GridWorld2D(MultiAgentEnv):
 		self._cal_state()
 		return reward, terminal, info 
 
+	def _state2image(self):
+		r = 10 
+		d = 2*r+1 # grid size d*d
+		i_h = self.map_size[0]*d 
+		i_w = self.map_size[1]*d 
+		img = np.zeros((i_h, i_w, 3), np.uint8)
+
+		# For water column
+		j = self.water_column
+		for i in range(self.map_size[0]):
+			img[i*d:(i+1)*d, j*d:(j+1)*d] = [126, 206, 224]
+		# For switch
+		i, j = self.switch_pos
+		img[i*d:(i+1)*d, j*d:(j+1)*d] = [236, 105, 65]
+		# For bridge
+		i = self.bridge_row
+		j = self.water_column
+		if self.bridge_visible:
+			img[i*d:(i+1)*d, j*d:(j+1)*d] = [34, 172, 56]
+		# For goal
+		mask = np.zeros((i_h, i_w), np.uint8)
+		i, j = self.goal_pos
+		for x,y in product(range(-r, r+1), range(-r, r+1)):
+			if np.linalg.norm((x,y))<=r:
+				img[i*d+r+x, j*d+r+y] = [255, 247, 153]
+		# For agents
+		for k in range(self.n_agents):
+			i, j = self.agent_pos[k]
+			for x,y in product(range(0, d), range(0, d)):
+				if abs(y-r)<=x//2:
+					ori = self.agent_ori[k]
+					dx,dy = x,y
+					if ori == 1:
+						dx,dy = y,x 
+					elif ori == 2:
+						dx,dy = d-x-1,y
+					else:
+						dx,dy = d-y-1,d-x-1 
+					img[i*d+dx, j*d+dy] = [143, 130, 188]
+
+		return img
+
 	def get_total_actions(self):
 		return self.n_actions
 
@@ -205,7 +271,7 @@ class GridWorld2D(MultiAgentEnv):
 		return [1]*self.n_actions
 
 	def get_avail_actions(self):
-		return [1]*self.n_actions*self.n_agents
+		return [[1]*self.n_actions]*self.n_agents
 
 	def close(self):
 		pass
@@ -215,3 +281,11 @@ class GridWorld2D(MultiAgentEnv):
 
 	def save_replay(self):
 		pass
+
+	def get_env_info(self):
+		env_info = {"state_shape": self.get_state_size(),
+			"obs_shape": self.get_obs_size(),
+			"n_actions": self.get_total_actions(),
+			"n_agents": self.n_agents,
+			"episode_limit": self.episode_limit}
+		return env_info
